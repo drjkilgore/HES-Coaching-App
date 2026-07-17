@@ -10,7 +10,7 @@
 
 window.HCP_CONFIG = {
   SUPABASE_URL: "https://jgrrlobzrhhoeojsovof.supabase.co",   // your project URL
-  SUPABASE_ANON_KEY: "PASTE_YOUR_ANON_PUBLIC_KEY_HERE",       // <-- paste the anon public key
+  SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpncnJsb2J6cmhob2VvanNvdm9mIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQzMDgxMDEsImV4cCI6MjA5OTg4NDEwMX0.hRoVICMla4Q84e3fqO7DklO5-Vt3h_PqsMEcbxcuVIo",       // <-- paste the anon public key
 
   // Optional overrides (safe to leave as-is):
   // AI_ENDPOINT: "/.netlify/functions/ai",
