@@ -74,10 +74,12 @@ exports.handler = async (event) => {
       const profs = await pRes.json();
       const pById = {}; (Array.isArray(profs) ? profs : []).forEach((p) => (pById[p.id] = p));
       const members = users.map((u) => ({
+        id: u.id,
         email: u.email,
         full_name: (pById[u.id] && pById[u.id].full_name) || (u.user_metadata && u.user_metadata.full_name) || "—",
         role: (pById[u.id] && pById[u.id].role) || (u.user_metadata && u.user_metadata.role) || "coach",
         status: u.confirmed_at || u.last_sign_in_at ? "active" : "invited",
+        is_self: u.id === caller.id,
       }));
       return json(200, { members });
     } catch (e) {
@@ -121,6 +123,23 @@ exports.handler = async (event) => {
       return json(200, { ok: true, id: userId, email });
     } catch (e) {
       return json(502, { error: "Invite failed: " + String(e) });
+    }
+  }
+
+  // 4) REMOVE a member (delete the auth user; profile + contracts cascade)
+  if (action === "remove") {
+    const { id } = body;
+    if (!id) return json(400, { error: "Missing user id" });
+    if (id === caller.id) return json(400, { error: "You can't remove your own account" });
+    try {
+      const r = await fetch(`${URL}/auth/v1/admin/users/${id}`, { method: "DELETE", headers: svcHeaders() });
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        return json(r.status, { error: e.msg || "Could not remove member" });
+      }
+      return json(200, { ok: true });
+    } catch (e) {
+      return json(502, { error: "Remove failed: " + String(e) });
     }
   }
 
