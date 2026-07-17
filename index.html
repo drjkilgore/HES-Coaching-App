@@ -419,11 +419,12 @@ async function hydrateFromSupabase(user){
   mem.schools=(schools||[]).map(s=>{const ct=(contracts||[]).find(x=>x.school_id===s.id);
     return {id:s.id,name:s.name,short:s.short_name||s.name,contract:ct?Number(ct.contracted_hours):0};});
   const mySchoolIds=(contracts||[]).map(c=>c.school_id);
-  mem.coaches=[{id:user.id,name:prof?prof.full_name:user.email,short:initials(prof?prof.full_name:user.email),
-    years:prof?prof.years_experience:null,schools: mySchoolIds.length?mySchoolIds:mem.schools.map(s=>s.id)}];
+  const self={id:user.id,name:prof?prof.full_name:user.email,short:initials(prof?prof.full_name:user.email),
+    years:prof?prof.years_experience:null,schools: mySchoolIds.length?mySchoolIds:mem.schools.map(s=>s.id), self:true};
+  mem.coaches=[self];
   state.coach=user.id;
   mem.hasCoachRoster=false;
-  // Admins can view every coach: load the full roster + their contracts.
+  // Admins can view every coach: load the full roster. Default view stays on the admin (self).
   if(state.profileRole==='district_admin' || state.profileRole==='system_admin'){
     const {data:profs}=await SB.from('profiles').select('id,full_name,role,years_experience').eq('role','coach');
     const {data:allC}=await SB.from('coach_school_contracts').select('coach_id,school_id');
@@ -432,7 +433,7 @@ async function hydrateFromSupabase(user){
       return {id:p.id,name:p.full_name||'Coach',short:initials(p.full_name||'Coach'),years:p.years_experience,
         schools:sids.length?sids:mem.schools.map(s=>s.id)};
     });
-    if(coaches.length){ mem.coaches=coaches; state.coach=coaches[0].id; mem.hasCoachRoster=true; }
+    if(coaches.length){ mem.coaches=[self,...coaches]; state.coach=self.id; mem.hasCoachRoster=true; }
   }
 }
 
@@ -1428,8 +1429,8 @@ function mountControls(){
     rs.style.display='none'; // role comes from the account
     // Admins can browse coaches; everyone else acts as themselves.
     if(state.role==='District Admin' && mem.hasCoachRoster){
-      cs.style.display=''; cs.title="Viewing coach";
-      cs.innerHTML=mem.coaches.map(c=>`<option value="${c.id}" ${c.id===state.coach?'selected':''}>${esc(c.name)}</option>`).join("");
+      cs.style.display=''; cs.title="Viewing";
+      cs.innerHTML=mem.coaches.map(c=>`<option value="${c.id}" ${c.id===state.coach?'selected':''}>${c.self?esc(c.name)+' (you · all)':'Coach: '+esc(c.name)}</option>`).join("");
       cs.onchange=e=>{state.coach=e.target.value; render();};
     } else { cs.style.display='none'; }
     if(!document.getElementById('signout')){
