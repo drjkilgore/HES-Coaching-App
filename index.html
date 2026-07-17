@@ -16,8 +16,8 @@
 <script>
 /* ---------- CONFIG (edit for production) ---------- */
 window.HCP_CONFIG = {
-  SUPABASE_URL: "https://jgrrlobzrhhoeojsovof.supabase.co",          // e.g. https://xxxx.supabase.co  (blank = demo mode)
-  SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpncnJsb2J6cmhob2VvanNvdm9mIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQzMDgxMDEsImV4cCI6MjA5OTg4NDEwMX0.hRoVICMla4Q84e3fqO7DklO5-Vt3h_PqsMEcbxcuVIo",     // anon public key
+  SUPABASE_URL: "",          // e.g. https://xxxx.supabase.co  (blank = demo mode)
+  SUPABASE_ANON_KEY: "",     // anon public key
   AI_ENDPOINT: "/.netlify/functions/ai", // your Netlify proxy; blank = template-only
   TEAM_ENDPOINT: "/.netlify/functions/team", // invite/list coaches (needs service-role fn)
   DEFAULT_RATE: 40,          // $/hr — implied by verification email (61.25h x $40 = $2,450)
@@ -395,9 +395,8 @@ const auth = {
   configured(){ return !!(window.HCP_CONFIG.SUPABASE_URL && SB); },
   async signIn(email,pw){ const {error}=await SB.auth.signInWithPassword({email,password:pw}); if(error) throw error;
     const {data:{user}}=await SB.auth.getUser(); await hydrateFromSupabase(user); LIVE=true; },
-  async signUp(email,pw,name){ const {data,error}=await SB.auth.signUp({email,password:pw}); if(error) throw error;
-    if(data.user){ await SB.from('profiles').upsert({id:data.user.id,full_name:name||email,role:'coach'});
-      await hydrateFromSupabase(data.user); LIVE=true; } },
+  async signUp(email,pw,name){ const {data,error}=await SB.auth.signUp({email,password:pw,options:{data:{full_name:name}}}); if(error) throw error;
+    if(data.user){ await hydrateFromSupabase(data.user); LIVE=true; } },
   async signOut(){ await SB.auth.signOut(); location.reload(); }
 };
 
@@ -587,8 +586,13 @@ async function vDashboard(v){
   const obsCount=mem.observations.filter(o=>o.coach===coach.id).length;
   const teachers=await db.teachers(coach.schools);
 
-  v.appendChild(h(`<div class="banner noprint" style="margin-bottom:16px">
-    <span>ⓘ</span><div><b>Phase 1 preview.</b> This runs on seeded demo data (a representative slice of ${esc(coach.name)}'s real ULA & Star George caseload). Rate assumed at ${money(RATE)}/hr from the hours-verification email. Connect Supabase in the config block to go live.</div></div>`));
+  if(!LIVE){
+    v.appendChild(h(`<div class="banner noprint" style="margin-bottom:16px">
+      <span>ⓘ</span><div><b>Demo mode.</b> This runs on seeded demo data (a representative slice of ${esc(coach.name)}'s real ULA & Star George caseload). Rate assumed at ${money(RATE)}/hr from the hours-verification email. Add your Supabase keys in the config block to go live.</div></div>`));
+  } else if(teachers.length===0){
+    v.appendChild(h(`<div class="banner noprint" style="margin-bottom:16px;background:var(--good-soft);border-color:#b9e5cf">
+      <span>✓</span><div><b>You're live — connected to Supabase.</b> This is a fresh database, so it's empty. Add teachers and time via <b>Import CSV</b>, and invite coaches via <b>Team &amp; invites</b> (admins).</div></div>`));
+  }
 
   const kpis=h(`<div class="grid g4"></div>`);
   const cardKPI=(eb,n,sub,tag)=>h(`<div class="card pad kpi"><div class="eyebrow">${eb}</div>
