@@ -23,6 +23,7 @@ window.HCP_CONFIG = Object.assign({
   SUPABASE_ANON_KEY: "",     // set in config.js
   AI_ENDPOINT: "/.netlify/functions/ai",
   TEAM_ENDPOINT: "/.netlify/functions/team",
+  PAY_ENDPOINT: "/.netlify/functions/pay",
   DEFAULT_RATE: 40,          // $/hr — implied by verification email (61.25h x $40 = $2,450)
   ORG_NAME: "Hamadeh Educational Services"
 }, window.HCP_CONFIG || {});
@@ -383,6 +384,7 @@ const mem = {
 };
 let SB=null, LIVE=false;
 mem.comments=[]; // principal comments on observations (demo)
+mem.payouts=[];  // simulated coach payouts (demo)
 
 async function initBackend(){
   const c=window.HCP_CONFIG;
@@ -814,6 +816,97 @@ async function vVerify(v){
     ctl.appendChild(h(`<p class="muted" style="font-size:12px;margin-top:14px">Tip: switch the top-right role to <b>Payroll</b> to see the approver side.</p>`));
   }
   v.appendChild(flow);
+
+  // ---- Coach payouts (Stripe Connect) ----
+  await renderPayoutCard(v, coach, pp, hours, gross);
+}
+
+async function renderPayoutCard(v, coach, pp, hours, gross){
+  const card=h(`<div class="card pad" style="margin-top:14px">
+    <div class="eyebrow">Coach payout</div>
+    <p class="muted" style="font-size:12px;margin:6px 0 12px">${LIVE?"Payments run through Stripe. Coaches connect a bank once; admins pay approved periods.":"In demo mode payouts are simulated. Connect Supabase + Stripe to send real payments."}</p>
+    <div id="payctl"></div>
+    <div class="hr"></div><div class="eyebrow">Recent payments</div>
+    <div id="paylist" style="margin-top:8px"><span class="muted" style="font-size:12.5px">Loading…</span></div>
+  </div>`);
+  v.appendChild(card);
+  const ctl=card.querySelector('#payctl'); const listEl=card.querySelector('#paylist');
+  const gcents=Math.round(gross*100);
+  const isAdmin = state.role==='District Admin';
+  const isCoachSelf = state.role==='Coach';
+
+  // recent payments
+  const paintList=async()=>{
+    const rows=await loadPayouts(coach.id);
+    if(!rows.length){ listEl.innerHTML=`<span class="muted" style="font-size:12.5px">No payments yet.</span>`; return; }
+    listEl.innerHTML="";
+    rows.forEach(p=>{const tag=p.status==='paid'?`<span class="tag good">paid</span>`:p.status==='failed'?`<span class="tag bad">failed</span>`:`<span class="tag">${esc(p.status)}</span>`;
+      listEl.appendChild(h(`<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line-2)">
+        <span>${esc(p.period_label)}</span><span>${money((p.amount_cents||0)/100)} &nbsp;${tag}</span></div>`));});
+  };
+
+  if(!LIVE){
+    // demo: simulate connect + pay
+    if(isCoachSelf){
+      ctl.appendChild(h(`<div class="banner" style="border-style:solid"><span>ⓘ</span><div>In live mode you'd connect your bank here via Stripe. (Simulated in demo.)</div></div>`));
+    } else if(isAdmin){
+      const already=mem.payouts.find(p=>p.coach_id===coach.id&&p.period_label===pp.label&&p.status==='paid');
+      if(pp.status!=='approved'){
+        ctl.appendChild(h(`<div class="muted" style="font-size:13px">Approve this pay period (Payroll role) before it can be paid.</div>`));
+      } else if(already){
+        ctl.appendChild(h(`<div class="banner" style="border-style:solid;background:var(--good-soft);border-color:#b9e5cf"><span>✓</span><div><b>Paid — ${money(gross)}</b> to ${esc(coach.name)} for ${esc(pp.label)}.</div></div>`));
+      } else {
+        const b=h(`<button class="btn p" id="pay">Pay ${esc(coach.name)} — ${money(gross)} (simulated)</button>`);
+        b.onclick=()=>{ mem.payouts.push({coach_id:coach.id,period_label:pp.label,hours,rate:RATE,amount_cents:gcents,status:'paid',created_at:new Date().toISOString()}); paintList(); ctl.innerHTML='';ctl.appendChild(h(`<div class="banner" style="border-style:solid;background:var(--good-soft);border-color:#b9e5cf"><span>✓</span><div><b>Paid — ${money(gross)}</b> (simulated).</div></div>`)); };
+        ctl.appendChild(b);
+      }
+    } else {
+      ctl.appendChild(h(`<div class="muted" style="font-size:13px">Payouts are managed by coaches (connect) and admins (pay).</div>`));
+    }
+    await paintList();
+    return;
+  }
+
+  // LIVE
+  if(isCoachSelf){
+    ctl.innerHTML=`<span class="muted" style="font-size:12.5px">Checking payout account…</span>`;
+    try{
+      const st=await callPay('status',{});
+      if(st.payouts_enabled){
+        ctl.innerHTML=`<div class="banner" style="border-style:solid;background:var(--good-soft);border-color:#b9e5cf"><span>✓</span><div><b>Payout account connected.</b> You're set to receive payments.</div></div>`;
+      } else {
+        ctl.innerHTML='';
+        const b=h(`<button class="btn p" id="connect">${st.connected?'Finish connecting payout account':'Connect payout account'}</button>`);
+        b.onclick=async()=>{ b.disabled=true;b.textContent='Opening Stripe…';
+          try{ const {url}=await callPay('onboard',{}); if(url) location.href=url; }
+          catch(e){ b.disabled=false;b.textContent='Connect payout account'; alert(e.message); } };
+        ctl.appendChild(b);
+        ctl.appendChild(h(`<p class="muted" style="font-size:12px;margin-top:8px">You'll be sent to Stripe to add your bank and identity details, then returned here.</p>`));
+      }
+    }catch(e){ ctl.innerHTML=`<span class="tag bad">${esc(e.message)}</span>`; }
+  } else if(isAdmin){
+    ctl.innerHTML=`<span class="muted" style="font-size:12.5px">Checking ${esc(coach.name)}'s payout account…</span>`;
+    let ready=false;
+    try{ const st=await callPay('status',{coach_id:coach.id}); ready=!!st.payouts_enabled; }catch(e){}
+    ctl.innerHTML='';
+    if(!ready){
+      ctl.appendChild(h(`<div class="banner" style="border-style:solid;background:var(--warn-soft);border-color:#e6d29a"><span>!</span><div><b>${esc(coach.name)} hasn't connected a payout account yet.</b> They connect it from their own Certify &amp; payroll page.</div></div>`));
+    } else if(pp.status!=='approved'){
+      ctl.appendChild(h(`<div class="muted" style="font-size:13px">Payout account ready. Approve this period before paying.</div>`));
+    } else {
+      const b=h(`<button class="btn p" id="pay">Pay ${esc(coach.name)} — ${money(gross)}</button>`);
+      const msg=h(`<div id="paymsg" style="margin-top:10px"></div>`);
+      b.onclick=async()=>{ if(!confirm(`Send ${money(gross)} to ${coach.name} for ${pp.label}? This moves real money.`))return;
+        b.disabled=true;b.textContent='Paying…';
+        try{ await callPay('pay',{coach_id:coach.id,amount_cents:gcents,hours,rate:RATE,period_label:pp.label});
+          msg.innerHTML=`<span class="tag good">Paid ${money(gross)} to ${esc(coach.name)}</span>`; b.remove(); paintList();
+        }catch(e){ b.disabled=false;b.textContent=`Pay ${coach.name} — ${money(gross)}`; msg.innerHTML=`<span class="tag bad">${esc(e.message)}</span>`; } };
+      ctl.appendChild(b); ctl.appendChild(msg);
+    }
+  } else {
+    ctl.appendChild(h(`<div class="muted" style="font-size:13px">Payouts are managed by coaches and admins.</div>`));
+  }
+  await paintList();
 }
 
 async function vTeachers(v){
@@ -1339,6 +1432,20 @@ async function callTeam(action,payload){
     "Authorization":"Bearer "+(session?session.access_token:"")},
     body:JSON.stringify({action,...payload})});
   const j=await r.json(); if(!r.ok) throw new Error(j.error||"Request failed"); return j;
+}
+async function callPay(action,payload){
+  const ep=window.HCP_CONFIG.PAY_ENDPOINT;
+  if(!LIVE || !ep) return {demo:true};
+  const {data:{session}}=await SB.auth.getSession();
+  const r=await fetch(ep,{method:"POST",headers:{"Content-Type":"application/json",
+    "Authorization":"Bearer "+(session?session.access_token:"")},
+    body:JSON.stringify({action,return_url:location.origin+location.pathname,...payload})});
+  const j=await r.json(); if(!r.ok) throw new Error(j.error||"Request failed"); return j;
+}
+async function loadPayouts(coachId){
+  if(!LIVE){ return mem.payouts.filter(p=>p.coach_id===coachId); }
+  const {data}=await SB.from('payouts').select('*').eq('coach_id',coachId).order('created_at',{ascending:false});
+  return data||[];
 }
 async function vTeam(v){
   v.appendChild(h(`<div class="banner noprint" style="margin-bottom:14px"><span>⊕</span>
