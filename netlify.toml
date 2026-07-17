@@ -1,0 +1,14 @@
+# netlify.toml — put this at the ROOT of the repo (same level as index.html)
+
+[build]
+  # No build step — the site is the single index.html at the repo root.
+  publish = "."
+
+[functions]
+  # Where Netlify looks for serverless functions.
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# Optional: pin the Node runtime (18+ gives you global fetch, which ai.js uses).
+[build.environment]
+  NODE_VERSION = "20"
