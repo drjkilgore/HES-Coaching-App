@@ -1387,21 +1387,33 @@ async function vTeam(v){
 
   // team list
   const list=h(`<div class="card"><div class="pad" style="padding-bottom:6px"><div class="eyebrow">Team members</div></div>
-    <table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th></tr></thead><tbody id="tbody"></tbody></table></div>`);
+    <table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody id="tbody"></tbody></table></div>`);
   v.appendChild(list);
   async function loadTeam(){
-    const tb=list.querySelector('#tbody'); tb.innerHTML=`<tr><td colspan="4"><div class="empty">Loading…</div></td></tr>`;
+    const tb=list.querySelector('#tbody'); tb.innerHTML=`<tr><td colspan="5"><div class="empty">Loading…</div></td></tr>`;
     let members=[];
     try{ const res=await callTeam('list',{});
-      if(res.demo){ members=mem.coaches.map(c=>({full_name:c.name,email:"—",role:"coach",status:"active"})); }
+      if(res.demo){ members=mem.coaches.map(c=>({id:c.id,full_name:c.name,email:"—",role:"coach",status:"active",is_self:false})); }
       else { members=res.members||[]; }
     }catch(e){ members=[]; }
     tb.innerHTML="";
-    if(!members.length){ tb.appendChild(h(`<tr><td colspan="4"><div class="empty">No members yet.</div></td></tr>`)); return; }
+    if(!members.length){ tb.appendChild(h(`<tr><td colspan="5"><div class="empty">No members yet.</div></td></tr>`)); return; }
     members.forEach(m=>{const active=(m.status==="active"||m.confirmed);
-      tb.appendChild(h(`<tr><td><b>${esc(m.full_name||"—")}</b></td><td class="dim">${esc(m.email||"—")}</td>
+      const row=h(`<tr><td><b>${esc(m.full_name||"—")}</b></td><td class="dim">${esc(m.email||"—")}</td>
         <td><span class="tag">${esc((m.role||"coach").replace("_"," "))}</span></td>
-        <td><span class="status-dot" style="background:${active?'var(--good)':'var(--warn)'}"></span>${active?"Active":"Invited"}</td></tr>`));});
+        <td><span class="status-dot" style="background:${active?'var(--good)':'var(--warn)'}"></span>${active?"Active":"Invited"}</td>
+        <td style="text-align:right">${m.is_self?`<span class="muted" style="font-size:12px">You</span>`:`<button class="btn sm" data-rm style="color:var(--bad);border-color:var(--bad-soft)">Remove</button>`}</td></tr>`);
+      const rm=row.querySelector('[data-rm]');
+      if(rm) rm.onclick=async()=>{
+        if(!confirm(`Remove ${m.full_name||m.email}? This deletes their account and access. This can't be undone.`)) return;
+        rm.disabled=true; rm.textContent="Removing…";
+        try{
+          const res=await callTeam('remove',{id:m.id});
+          if(res.demo){ mem.coaches=mem.coaches.filter(c=>c.id!==m.id); }
+          loadTeam();
+        }catch(e){ rm.disabled=false; rm.textContent="Remove"; alert(e.message||"Could not remove member"); }
+      };
+      tb.appendChild(row);});
   }
   loadTeam();
 }
