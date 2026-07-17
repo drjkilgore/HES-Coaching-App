@@ -1418,6 +1418,16 @@ async function vHelp(v){
       <div class="step"><div class="num">1</div><div class="dim" style="font-size:13px">Open <b>Team &amp; invites</b>.</div></div>
       <div class="step"><div class="num">2</div><div class="dim" style="font-size:13px">Enter the coach's name, email, role, and (for coaches) their schools and contracted hours.</div></div>
       <div class="step"><div class="num">3</div><div class="dim" style="font-size:13px">Send the invite. They get an email to set a password, then land in the app with the right access.</div></div></div>`));
+
+    v.appendChild(h(`<div class="card pad help" style="margin-top:14px"><div class="eyebrow">Admin: paying coaches</div>
+      <p class="muted" style="font-size:12.5px;margin:6px 0 10px">Payments run through Stripe. A coach must connect a bank once, then you pay each pay period after it's approved.</p>
+      <div class="step"><div class="num">1</div><div class="dim" style="font-size:13px"><b>Coach connects a bank (one time).</b> The coach signs in, opens <b>Certify &amp; payroll</b>, and clicks <b>Connect payout account</b> to finish Stripe's setup (bank + ID). You'll see their status turn to "connected."</div></div>
+      <div class="step"><div class="num">2</div><div class="dim" style="font-size:13px"><b>The period gets certified &amp; approved.</b> The coach certifies their hours; a Payroll or Admin approves the period. Payment is only possible once it shows <b>Approved</b>.</div></div>
+      <div class="step"><div class="num">3</div><div class="dim" style="font-size:13px"><b>Pick the coach.</b> Use the <b>viewing</b> dropdown (top right) to select the coach you're paying, then open <b>Certify &amp; payroll</b>. The <b>Coach payout</b> card shows their total and status.</div></div>
+      <div class="step"><div class="num">4</div><div class="dim" style="font-size:13px"><b>Pay.</b> Click <b>Pay [coach] — $amount</b> and confirm. Stripe sends the money to their bank. It's recorded under <b>Recent payments</b>, and the same coach + period can't be paid twice.</div></div>
+      <div class="step"><div class="num">5</div><div class="dim" style="font-size:13px"><b>Taxes.</b> Stripe can generate and file each coach's 1099 at year end — enable this in your Stripe dashboard.</div></div>
+      <div class="banner" style="border-style:solid;margin-top:10px"><span>ⓘ</span><div style="font-size:12.5px">If the Pay button is missing: the period isn't <b>Approved</b> yet, or that coach hasn't connected a payout account. If you see "simulated," Stripe isn't connected yet (test-mode setup pending).</div></div>
+    </div>`));
   }
 }
 
