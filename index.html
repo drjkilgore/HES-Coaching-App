@@ -16,9 +16,10 @@
 <script>
 /* ---------- CONFIG (edit for production) ---------- */
 window.HCP_CONFIG = {
-  SUPABASE_URL: "https://jgrrlobzrhhoeojsovof.supabase.co",          // e.g. https://xxxx.supabase.co  (blank = demo mode)
-  SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpncnJsb2J6cmhob2VvanNvdm9mIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQzMDgxMDEsImV4cCI6MjA5OTg4NDEwMX0.hRoVICMla4Q84e3fqO7DklO5-Vt3h_PqsMEcbxcuVIo",     // anon public key
+  SUPABASE_URL: "",          // e.g. https://xxxx.supabase.co  (blank = demo mode)
+  SUPABASE_ANON_KEY: "",     // anon public key
   AI_ENDPOINT: "/.netlify/functions/ai", // your Netlify proxy; blank = template-only
+  TEAM_ENDPOINT: "/.netlify/functions/team", // invite/list coaches (needs service-role fn)
   DEFAULT_RATE: 40,          // $/hr — implied by verification email (61.25h x $40 = $2,450)
   ORG_NAME: "Hamadeh Educational Services"
 };
@@ -136,6 +137,27 @@ textarea{resize:vertical;min-height:70px;line-height:1.55}
 .seg{border:1px solid var(--line);background:#fff;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer;color:var(--ink-2)}
 .seg:first-child{border-radius:8px 0 0 8px}.seg:last-child{border-radius:0 8px 8px 0}.seg+.seg{border-left:0}
 .seg.on{background:var(--brand);border-color:var(--brand);color:#fff}
+/* interactive tour */
+#tourOverlay{position:fixed;inset:0;z-index:80;pointer-events:none}
+#tourHole{position:absolute;border-radius:12px;box-shadow:0 0 0 9999px rgba(10,16,20,.62);transition:all .28s cubic-bezier(.4,0,.2,1);pointer-events:none}
+#tourTip{position:absolute;z-index:81;width:300px;max-width:calc(100vw - 24px);background:#fff;border-radius:12px;box-shadow:0 20px 50px -12px rgba(0,0,0,.45);padding:16px;pointer-events:auto}
+#tourTip .tstep{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--brand-2);font-weight:700}
+#tourTip h4{margin:4px 0 6px;font-size:15px}
+#tourTip p{margin:0;color:var(--ink-2);font-size:13px;line-height:1.5}
+#tourTip .trow{display:flex;gap:8px;align-items:center;margin-top:14px}
+#tourTip .tdots{display:flex;gap:4px;flex:1}
+#tourTip .tdots i{width:6px;height:6px;border-radius:50%;background:var(--line);display:block}
+#tourTip .tdots i.on{background:var(--brand)}
+.tour-cta{position:relative}
+/* help */
+.help h3{font-size:15px;margin:18px 0 6px}
+.help .step{display:flex;gap:12px;padding:10px 0;border-bottom:1px solid var(--line-2)}
+.help .step .num{width:24px;height:24px;border-radius:50%;background:var(--brand-soft);color:var(--brand-2);font-weight:700;font-size:12px;display:grid;place-items:center;flex:none}
+.help .role-card{border:1px solid var(--line);border-radius:11px;padding:14px}
+.help .role-card h4{margin:0 0 6px;font-size:14px}
+.pill{display:inline-block;padding:2px 8px;border-radius:6px;background:var(--line-2);font-size:11px;font-weight:600;color:var(--ink-2);margin-left:6px}
+/* team */
+.status-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
 </style>
 </head>
 <body>
@@ -153,6 +175,7 @@ textarea{resize:vertical;min-height:70px;line-height:1.55}
       <div><h1 id="pageTitle">Dashboard</h1></div>
       <div class="sub" id="pageSub"></div>
       <div class="spacer"></div>
+      <button class="btn sm" id="tourBtn" title="Guided walkthrough" style="margin-right:6px">? Tour</button>
       <div class="who">
         <select id="roleSel" title="View as role"></select>
         <select id="coachSel" title="Acting coach"></select>
@@ -163,13 +186,20 @@ textarea{resize:vertical;min-height:70px;line-height:1.55}
   </main>
 </div>
 
-<!-- Supabase client (loaded only if configured) -->
+<!-- External libs: PapaParse (CSV import, always) + supabase-js (only if configured) -->
 <script>
-if(window.HCP_CONFIG.SUPABASE_URL){
-  var s=document.createElement('script');
-  s.src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js";
-  document.head.appendChild(s);
-}
+// Never let a slow/failed CDN hang boot: resolve on load OR error OR a 4s timeout.
+function loadScript(src){return new Promise((res)=>{
+  var done=false, fin=()=>{if(!done){done=true;res();}};
+  var s=document.createElement('script'); s.src=src; s.onload=fin; s.onerror=fin;
+  setTimeout(fin,4000); document.head.appendChild(s);
+});}
+window.HCP_LIBS = (async function(){
+  await loadScript("https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js");
+  if(window.HCP_CONFIG.SUPABASE_URL){
+    await loadScript("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js");
+  }
+})();
 </script>
 
 <script>
@@ -345,35 +375,117 @@ const mem = {
   observations:[...OBSERVATIONS], time:[...TIME],
   pp:{...PP}, verifyNote:""
 };
-let SB=null;
+let SB=null, LIVE=false;
+mem.comments=[]; // principal comments on observations (demo)
+
 async function initBackend(){
   const c=window.HCP_CONFIG;
+  if(window.HCP_LIBS) await window.HCP_LIBS;      // wait for CDN libs
   if(c.SUPABASE_URL && window.supabase){
     SB=window.supabase.createClient(c.SUPABASE_URL,c.SUPABASE_ANON_KEY);
-    document.getElementById('modeTag').textContent="Live · Supabase";
+    const {data:{session}} = await SB.auth.getSession();
+    if(session){ await hydrateFromSupabase(session.user); LIVE=true; }
   }
+  const tag=document.getElementById('modeTag');
+  if(tag) tag.textContent = LIVE ? "Live · Supabase" : "Demo mode";
 }
+
+// Sign-in / sign-up / sign-out (live only)
+const auth = {
+  configured(){ return !!(window.HCP_CONFIG.SUPABASE_URL && SB); },
+  async signIn(email,pw){ const {error}=await SB.auth.signInWithPassword({email,password:pw}); if(error) throw error;
+    const {data:{user}}=await SB.auth.getUser(); await hydrateFromSupabase(user); LIVE=true; },
+  async signUp(email,pw,name){ const {data,error}=await SB.auth.signUp({email,password:pw}); if(error) throw error;
+    if(data.user){ await SB.from('profiles').upsert({id:data.user.id,full_name:name||email,role:'coach'});
+      await hydrateFromSupabase(data.user); LIVE=true; } },
+  async signOut(){ await SB.auth.signOut(); location.reload(); }
+};
+
+// Load the signed-in user's world into mem + state (live mode)
+async function hydrateFromSupabase(user){
+  state.user=user;
+  const {data:prof}=await SB.from('profiles').select('*').eq('id',user.id).single();
+  state.profileRole = prof?prof.role:'coach';
+  const roleMap={coach:'Coach',principal:'Principal',district_admin:'District Admin',payroll:'Payroll',system_admin:'District Admin',executive:'Executive',teacher:'Coach'};
+  state.role = roleMap[state.profileRole]||'Coach';
+  // schools + this coach's contracts
+  const {data:schools}=await SB.from('schools').select('*');
+  const {data:contracts}=await SB.from('coach_school_contracts').select('*').eq('coach_id',user.id);
+  mem.schools=(schools||[]).map(s=>{const ct=(contracts||[]).find(x=>x.school_id===s.id);
+    return {id:s.id,name:s.name,short:s.short_name||s.name,contract:ct?Number(ct.contracted_hours):0};});
+  const mySchoolIds=(contracts||[]).map(c=>c.school_id);
+  mem.coaches=[{id:user.id,name:prof?prof.full_name:user.email,short:initials(prof?prof.full_name:user.email),
+    years:prof?prof.years_experience:null,schools: mySchoolIds.length?mySchoolIds:mem.schools.map(s=>s.id)}];
+  state.coach=user.id;
+}
+
+// map helpers (Supabase row <-> app shape)
+const mapTeacher=r=>({id:r.id,school:r.school_id,name:r.full_name,subject:r.subject||"—",grade:r.grade||"—"});
+const mapTime=r=>({id:r.id,coach:r.coach_id,date:r.entry_date,school:r.school_id,start:r.start_time,end:r.end_time,
+  hours:Number(r.hours),activity:r.activity,teacher:r.teacher_id,note:r.note});
+const mapObs=r=>({id:r.id,teacher:r.teacher_id,coach:r.coach_id,date:r.observed_on,time:r.observed_at,
+  objective:r.objective,opening:(r.checklist||{}).opening||{},mid:(r.checklist||{}).mid||{},close:(r.checklist||{}).close||{},
+  evidence:r.evidence,recs:r.recommendations});
+
 const db = {
   async schools(){ return mem.schools; },
   async coaches(){ return mem.coaches; },
-  async teachers(coachSchools){ return mem.teachers.filter(t=>!coachSchools||coachSchools.includes(t.school)); },
-  async teacher(id){ return mem.teachers.find(t=>t.id===id); },
-  async coaching(id){ return mem.coaching[id]||{goals:[],resources:[],outcomes:[],next:[]}; },
-  async observationsFor(id){ return mem.observations.filter(o=>o.teacher===id).sort((a,b)=>b.date.localeCompare(a.date)); },
-  async allObservations(){ return mem.observations; },
-  async time(coach){ return mem.time.filter(t=>t.coach===coach).sort((a,b)=>a.date.localeCompare(b.date)); },
-  async addTime(e){ e.id="t"+Date.now(); mem.time.push(e); return e; },
-  async addObservation(o){ o.id="obs"+Date.now(); mem.observations.push(o);
-    // append to the teacher's outcomes-timeline implicitly via observations
-    return o; },
+  async teachers(coachSchools){
+    if(LIVE){ let q=SB.from('teachers').select('*'); const {data}=await q; 
+      let list=(data||[]).map(mapTeacher);
+      return coachSchools?list.filter(t=>coachSchools.includes(t.school)):list; }
+    return mem.teachers.filter(t=>!coachSchools||coachSchools.includes(t.school)); },
+  async teacher(id){
+    if(LIVE){ const {data}=await SB.from('teachers').select('*').eq('id',id).single(); return data?mapTeacher(data):null; }
+    return mem.teachers.find(t=>t.id===id); },
+  async coaching(id){
+    if(LIVE){ const {data}=await SB.from('coaching_items').select('*').eq('teacher_id',id);
+      const b={goals:[],resources:[],outcomes:[],next:[]};
+      (data||[]).forEach(r=>{const k={goal:'goals',resource:'resources',outcome:'outcomes',focus_next_year:'next'}[r.item_type]; if(k)b[k].push(r.body);});
+      return b; }
+    return mem.coaching[id]||{goals:[],resources:[],outcomes:[],next:[]}; },
+  async observationsFor(id){
+    if(LIVE){ const {data}=await SB.from('observations').select('*').eq('teacher_id',id).order('observed_on',{ascending:false});
+      return (data||[]).map(mapObs); }
+    return mem.observations.filter(o=>o.teacher===id).sort((a,b)=>b.date.localeCompare(a.date)); },
+  async allObservations(){ if(LIVE){const {data}=await SB.from('observations').select('*');return (data||[]).map(mapObs);} return mem.observations; },
+  async time(coach){
+    if(LIVE){ const {data}=await SB.from('time_entries').select('*').eq('coach_id',coach).order('entry_date');
+      return (data||[]).map(mapTime); }
+    return mem.time.filter(t=>t.coach===coach).sort((a,b)=>a.date.localeCompare(b.date)); },
+  async addTime(e){
+    if(LIVE){ const {data,error}=await SB.from('time_entries').insert({coach_id:e.coach,school_id:e.school,teacher_id:e.teacher||null,
+      entry_date:e.date,start_time:e.start,end_time:e.end,hours:e.hours,activity:e.activity,note:e.note}).select().single();
+      if(error) throw error; return mapTime(data); }
+    e.id="t"+Date.now(); mem.time.push(e); return e; },
+  async addObservation(o){
+    if(LIVE){ const {data,error}=await SB.from('observations').insert({teacher_id:o.teacher,coach_id:o.coach,
+      observed_on:o.date,observed_at:o.time||null,objective:o.objective,
+      checklist:{opening:o.opening,mid:o.mid,close:o.close},evidence:o.evidence,recommendations:o.recs}).select().single();
+      if(error) throw error; return mapObs(data); }
+    o.id="obs"+Date.now(); mem.observations.push(o); return o; },
+  async addTeacher(t){
+    if(LIVE){ const {data,error}=await SB.from('teachers').insert({school_id:t.school,full_name:t.name,subject:t.subject||null,grade:t.grade||null}).select().single();
+      if(error) throw error; return mapTeacher(data); }
+    t.id="tc"+Date.now(); mem.teachers.push(t); return t; },
+  async addCoachingItem(teacherId,type,body,coach){
+    if(LIVE){ const {error}=await SB.from('coaching_items').insert({teacher_id:teacherId,coach_id:coach,item_type:type,body}); if(error) throw error; return; }
+    const k={goal:'goals',resource:'resources',outcome:'outcomes',focus_next_year:'next'}[type];
+    mem.coaching[teacherId]=mem.coaching[teacherId]||{goals:[],resources:[],outcomes:[],next:[]};
+    if(k) mem.coaching[teacherId][k].push(body); },
   async pp(){ return mem.pp; },
   async setPP(status,note){ mem.pp.status=status; if(note!=null)mem.verifyNote=note; return mem.pp; },
+  async comments(obsId){ if(LIVE){const {data}=await SB.from('observation_comments').select('*').eq('observation_id',obsId).order('created_at');return data||[];}
+    return mem.comments.filter(c=>c.observation_id===obsId); },
+  async addComment(obsId,body){ const author=(mem.coaches[0]||{}).name||'Principal';
+    if(LIVE){ const {data,error}=await SB.from('observation_comments').insert({observation_id:obsId,author_id:state.user?state.user.id:null,body}).select().single(); if(error) throw error; return data; }
+    const c={id:"c"+Date.now(),observation_id:obsId,body,author,created_at:new Date().toISOString()}; mem.comments.push(c); return c; },
 };
 
 /* =====================================================================
    STATE + ROUTER
    ===================================================================== */
-const state = { role:"Coach", coach:"lisa", route:"dashboard", param:null };
+const state = { role:"Coach", coach:"lisa", route:"dashboard", param:null, user:null, profileRole:null };
 const ROLES=["Coach","Principal","District Admin","Payroll","Executive"];
 
 function h(html){ const t=document.createElement('template'); t.innerHTML=html.trim(); return t.content.firstChild; }
@@ -383,20 +495,38 @@ const fmtDate=iso=>{const[y,m,d]=iso.split("-");return new Date(y,m-1,d).toLocal
 function initials(name){return name.split(/\s+/).slice(0,2).map(x=>x[0]).join("").toUpperCase();}
 function hoursBetween(a,b){const[ah,am]=a.split(":").map(Number),[bh,bm]=b.split(":").map(Number);let m=(bh*60+bm)-(ah*60+am);if(m<0)m+=1440;return +(m/60).toFixed(2);}
 
-const NAV=[
-  {grp:"Coach"},
-  {r:"dashboard",label:"Dashboard",i:"◧"},
-  {r:"timelog",label:"Time & hours",i:"◔"},
-  {r:"verify",label:"Certify & payroll",i:"✓"},
-  {grp:"Instruction"},
-  {r:"teachers",label:"Teachers",i:"❏"},
-  {r:"observe",label:"New observation",i:"⊕"},
-  {r:"eoy",label:"End-of-year report",i:"❐"},
+// Nav is role-aware. Each item lists the roles that may see it.
+const NAV_ALL=[
+  {grp:"Coach",roles:["Coach"]},
+  {r:"dashboard",label:"Dashboard",i:"◧",roles:["Coach","District Admin","Executive"]},
+  {r:"timelog",label:"Time & hours",i:"◔",roles:["Coach"]},
+  {r:"verify",label:"Certify & payroll",i:"✓",roles:["Coach","Payroll","District Admin"]},
+  {grp:"Instruction",roles:["Coach","Principal","District Admin"]},
+  {r:"teachers",label:"Teachers",i:"❏",roles:["Coach","District Admin"]},
+  {r:"observe",label:"New observation",i:"⊕",roles:["Coach"]},
+  {r:"eoy",label:"End-of-year report",i:"❐",roles:["Coach","Principal","District Admin","Executive"]},
+  {grp:"Principal",roles:["Principal"]},
+  {r:"principal",label:"Teacher progress",i:"◫",roles:["Principal"]},
+  {grp:"Data",roles:["Coach","District Admin"]},
+  {r:"import",label:"Import CSV",i:"⭳",roles:["Coach","District Admin"]},
+  {grp:"Admin",roles:["District Admin"]},
+  {r:"team",label:"Team & invites",i:"⊕",roles:["District Admin"]},
+  {grp:"Help",roles:["Coach","Principal","District Admin","Payroll","Executive"]},
+  {r:"help",label:"How to use",i:"?",roles:["Coach","Principal","District Admin","Payroll","Executive"]},
 ];
-
+function navFor(role){
+  const out=[]; let pendingGrp=null;
+  NAV_ALL.forEach(n=>{
+    if(!n.roles.includes(role)) return;
+    if(n.grp){ pendingGrp=n; return; }
+    if(pendingGrp){ out.push(pendingGrp); pendingGrp=null; }
+    out.push(n);
+  });
+  return out;
+}
 function renderNav(){
   const nav=document.getElementById('nav'); nav.innerHTML="";
-  NAV.forEach(n=>{
+  navFor(state.role).forEach(n=>{
     if(n.grp){ nav.appendChild(h(`<div class="grp">${n.grp}</div>`)); return; }
     const a=h(`<a data-r="${n.r}" class="${state.route===n.r?'on':''}"><span class="i">${n.i}</span>${n.label}</a>`);
     a.onclick=()=>go(n.r);
@@ -412,14 +542,21 @@ window.addEventListener('hashchange',()=>{
    VIEWS
    ===================================================================== */
 async function render(){
+  // Auth gate: if Supabase is configured but nobody is signed in, show login.
+  if(auth.configured() && !state.user){ renderAuthScreen(); return; }
+  if(LIVE) await syncCache();
+  // keep route legal for the current role BEFORE rendering nav/title
+  const landing={Coach:'dashboard',Principal:'principal',Payroll:'verify','District Admin':'dashboard',Executive:'dashboard'};
+  const allowed=navFor(state.role).filter(n=>n.r).map(n=>n.r).concat(['teacher']);
+  if(!allowed.includes(state.route)) state.route = landing[state.role]&&allowed.includes(landing[state.role])?landing[state.role]:(allowed[0]||'dashboard');
   renderNav();
-  const coach=mem.coaches.find(c=>c.id===state.coach);
-  document.getElementById('avatar').textContent=coach.short;
-  const titles={dashboard:"Dashboard",timelog:"Time & hours",verify:"Certify & payroll",teachers:"Teachers",teacher:"Teacher profile",observe:"New observation",eoy:"End-of-year report"};
+  const coach=mem.coaches.find(c=>c.id===state.coach)||mem.coaches[0];
+  document.getElementById('avatar').textContent=coach?coach.short:"–";
+  const titles={dashboard:"Dashboard",timelog:"Time & hours",verify:"Certify & payroll",teachers:"Teachers",teacher:"Teacher profile",observe:"New observation",eoy:"End-of-year report",principal:"Teacher progress",import:"Import CSV",team:"Team & invites",help:"How to use"};
   document.getElementById('pageTitle').textContent=titles[state.route]||"Dashboard";
-  document.getElementById('pageSub').textContent = state.route==='dashboard'?`Welcome back, ${coach.name.split(" ")[0]}`:"";
+  document.getElementById('pageSub').textContent = state.route==='dashboard'&&coach?`Welcome back, ${coach.name.split(" ")[0]}`:"";
   const v=document.getElementById('view'); v.innerHTML="";
-  const map={dashboard:vDashboard,timelog:vTimelog,verify:vVerify,teachers:vTeachers,teacher:vTeacher,observe:vObserve,eoy:vEOY};
+  const map={dashboard:vDashboard,timelog:vTimelog,verify:vVerify,teachers:vTeachers,teacher:vTeacher,observe:vObserve,eoy:vEOY,principal:vPrincipal,import:vImport,team:vTeam,help:vHelp};
   await (map[state.route]||vDashboard)(v);
 }
 
@@ -428,7 +565,7 @@ async function contractStatus(coach){
   const cds=[];
   for(const sid of coach.schools){
     const sc=mem.schools.find(s=>s.id===sid); if(!sc)continue;
-    const base=(CONTRACT_BASELINE[sid]||{worked:0}).worked;
+    const base=LIVE?0:(CONTRACT_BASELINE[sid]||{worked:0}).worked;
     const logged=mem.time.filter(t=>t.coach===coach.id&&t.school===sid).reduce((a,t)=>a+(t.hours||0),0);
     const worked=base+logged;
     const pct=Math.min(100,Math.round(worked/sc.contract*100));
@@ -869,23 +1006,417 @@ async function vEOY(v){
   };
 }
 
+/* Pull the signed-in coach's data into the in-memory cache so all views
+   (which read mem.*) work identically in live and demo modes. */
+async function syncCache(){
+  try{
+    mem.teachers = await db.teachers();
+    mem.time     = await db.time(state.coach);
+    mem.observations = await db.allObservations();
+  }catch(e){ console.warn("sync failed",e); }
+}
+
+/* ---------- Auth screen (live mode only) ---------- */
+function renderAuthScreen(){
+  document.querySelector('.side').style.display='none';
+  document.querySelector('.top').style.display='none';
+  const v=document.getElementById('view');
+  document.querySelector('.wrap').style.maxWidth='none';
+  v.innerHTML="";
+  const card=h(`<div style="min-height:80vh;display:grid;place-items:center">
+    <div class="card pad" style="width:min(400px,100%)">
+      <div class="brand" style="padding:0 0 14px"><div class="mark">HC</div>
+        <div><b style="color:var(--ink)">HES Coaching</b><span class="muted" style="display:block;font-size:11px">Instructional Coaching</span></div></div>
+      <div class="eyebrow" id="mode">Sign in</div>
+      <div id="nameField" style="display:none" class="field"><label class="f">Full name</label><input id="nm"></div>
+      <div class="field" style="margin-top:10px"><label class="f">Email</label><input id="em" type="email" autocomplete="username"></div>
+      <div class="field"><label class="f">Password</label><input id="pw" type="password" autocomplete="current-password"></div>
+      <div id="err" class="tag bad" style="display:none;margin-bottom:10px"></div>
+      <button class="btn p" id="go" style="width:100%;justify-content:center">Sign in</button>
+      <p class="muted" style="font-size:12.5px;text-align:center;margin:12px 0 0">
+        <a id="toggle" style="color:var(--brand);cursor:pointer">Create an account</a></p>
+    </div></div>`);
+  let signup=false;
+  card.querySelector('#toggle').onclick=()=>{signup=!signup;
+    card.querySelector('#mode').textContent=signup?"Create account":"Sign in";
+    card.querySelector('#go').textContent=signup?"Create account":"Sign in";
+    card.querySelector('#nameField').style.display=signup?"block":"none";
+    card.querySelector('#toggle').textContent=signup?"I already have an account":"Create an account";};
+  const err=m=>{const e=card.querySelector('#err');e.style.display='inline-flex';e.textContent=m;};
+  card.querySelector('#go').onclick=async()=>{
+    const btn=card.querySelector('#go');btn.disabled=true;btn.textContent="…";
+    try{
+      const em=card.querySelector('#em').value,pw=card.querySelector('#pw').value;
+      if(signup) await auth.signUp(em,pw,card.querySelector('#nm').value);
+      else await auth.signIn(em,pw);
+      document.querySelector('.side').style.display='';document.querySelector('.top').style.display='';
+      mountControls(); render();
+    }catch(e){ err(e.message||"Sign-in failed"); btn.disabled=false;btn.textContent=signup?"Create account":"Sign in"; }
+  };
+  v.appendChild(card);
+}
+
+/* ---------- Principal portal ---------- */
+async function vPrincipal(v){
+  // principals see teachers + their latest observation, and can comment / request coaching
+  const teachers = await db.teachers(); // scoped by RLS in live; all in demo
+  v.appendChild(h(`<div class="banner noprint" style="margin-bottom:14px"><span>◫</span>
+    <div><b>Principal view.</b> Latest classroom observation per teacher, with space to comment or request additional coaching. Comments are visible to the coach.</div></div>`));
+  const card=h(`<div class="card"><table><thead><tr><th>Teacher</th><th>Latest observation</th><th>Objective</th><th>Flags</th><th></th></tr></thead><tbody></tbody></table></div>`);
+  const tb=card.querySelector('tbody');
+  for(const t of teachers){
+    const obs=(await db.observationsFor(t.id))[0];
+    if(!obs){ tb.appendChild(h(`<tr><td><b>${esc(t.name)}</b></td><td class="muted">—</td><td class="muted">No observation yet</td><td></td><td></td></tr>`)); continue; }
+    const flags=[];
+    if(obs.close&&obs.close.next_steps!=="Yes") flags.push("closure");
+    if(obs.close&&obs.close.assessed!=="Yes") flags.push("assessment");
+    const ft=flags.length?flags.map(f=>`<span class="tag warn">${f}</span>`).join(" "):`<span class="tag good">on track</span>`;
+    const r=h(`<tr class="clk"><td><b>${esc(t.name)}</b></td><td>${fmtDate(obs.date)}</td>
+      <td class="muted" style="max-width:280px;font-size:12.5px">${esc(obs.objective||"—")}</td><td>${ft}</td>
+      <td style="text-align:right"><span class="muted">Review →</span></td></tr>`);
+    r.onclick=()=>openPrincipalObs(obs,t);
+    tb.appendChild(r);
+  }
+  if(!teachers.length) tb.appendChild(h(`<tr><td colspan="5"><div class="empty">No teachers assigned.</div></td></tr>`));
+  v.appendChild(card);
+}
+function openPrincipalObs(o,t){
+  const m=h(`<div class="scrim"><div class="modal"><div class="mhead"><b>${esc(t.name)}</b>
+    <span class="muted" style="font-size:12.5px">Observation · ${fmtDate(o.date)}</span><button class="x">✕</button></div>
+    <div class="mbody">
+      <div class="field"><label class="f">Objective</label><div>${esc(o.objective||"—")}</div></div>
+      <div class="field"><label class="f">Evidence</label><div class="dim">${esc(o.evidence||"—")}</div></div>
+      <div class="field"><label class="f">Coach recommendations</label><div class="dim">${esc(o.recs||"—")}</div></div>
+      <div class="hr"></div>
+      <div class="eyebrow">Principal comments</div>
+      <div id="clist" style="margin:8px 0"></div>
+      <div class="field"><textarea id="cbody" placeholder="Add a comment or request additional coaching…"></textarea></div>
+      <div style="display:flex;gap:10px"><button class="btn p" id="post">Post comment</button>
+        <button class="btn" id="req">Request additional coaching</button></div>
+    </div></div></div>`);
+  const close=()=>m.remove(); m.querySelector('.x').onclick=close; m.onclick=e=>{if(e.target===m)close();};
+  const paint=async()=>{const list=m.querySelector('#clist');const cs=await db.comments(o.id);
+    list.innerHTML=cs.length?cs.map(c=>`<div style="border:1px solid var(--line-2);border-radius:9px;padding:9px 11px;margin-bottom:8px">
+      <div style="font-weight:600;font-size:12.5px">${esc(c.author||"Principal")}</div><div class="dim">${esc(c.body)}</div></div>`).join(""):`<div class="muted" style="font-size:12.5px">No comments yet.</div>`;};
+  paint();
+  m.querySelector('#post').onclick=async()=>{const b=m.querySelector('#cbody');if(!b.value.trim())return;await db.addComment(o.id,b.value.trim());b.value="";paint();};
+  m.querySelector('#req').onclick=async()=>{await db.addComment(o.id,"⚑ Requested additional coaching for this teacher.");paint();};
+  document.body.appendChild(m);
+}
+
+/* ---------- CSV importer ---------- */
+const IMPORT_TYPES={
+  teachers:{label:"Teachers",fields:["full_name","subject","grade","school"],required:["full_name"],
+    template:"full_name,subject,grade,school\nJane Doe,Math,5,Universal Learning Academy\n"},
+  time:{label:"Time entries",fields:["entry_date","start_time","end_time","school","activity","teacher","note"],required:["entry_date","school"],
+    template:"entry_date,start_time,end_time,school,activity,teacher,note\n2026-02-11,08:00,16:00,Star George Academy,Observation,,Observed teachers\n"},
+  coaching:{label:"Coaching goals",fields:["teacher","item_type","body"],required:["teacher","item_type","body"],
+    template:"teacher,item_type,body\nJane Doe,goal,Post the objective and revisit it at closure.\n"},
+};
+async function vImport(v){
+  const coach=mem.coaches.find(c=>c.id===state.coach)||mem.coaches[0];
+  v.appendChild(h(`<div class="banner noprint" style="margin-bottom:14px"><span>⭳</span>
+    <div><b>Bulk import.</b> Export a sheet to CSV (or paste rows), map the columns, preview, and commit. ${LIVE?"Rows are written to your database.":"In demo mode rows are added to this session only."}</div></div>`));
+  const pick=h(`<div class="card pad" style="margin-bottom:14px">
+    <div class="eyebrow">1 · What are you importing?</div>
+    <div style="display:flex;gap:10px;margin-top:10px" id="types"></div>
+    <div style="margin-top:12px"><a id="tmpl" class="btn sm">⬇ Download template CSV</a></div></div>`);
+  let type="teachers";
+  const paintTypes=()=>{const w=pick.querySelector('#types');w.innerHTML="";
+    Object.entries(IMPORT_TYPES).forEach(([k,cfg])=>{const b=h(`<button class="btn ${k===type?'p':''}">${cfg.label}</button>`);
+      b.onclick=()=>{type=k;paintTypes();};w.appendChild(b);});};
+  paintTypes();
+  pick.querySelector('#tmpl').onclick=()=>{const cfg=IMPORT_TYPES[type];
+    const blob=new Blob([cfg.template],{type:"text/csv"});const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);a.download=`${type}_template.csv`;a.click();};
+  v.appendChild(pick);
+
+  const src=h(`<div class="card pad" style="margin-bottom:14px">
+    <div class="eyebrow">2 · Add your data</div>
+    <div style="display:flex;gap:10px;margin:10px 0"><label class="btn sm">📁 Upload CSV<input type="file" id="file" accept=".csv" style="display:none"></label>
+      <span class="muted" style="align-self:center;font-size:12.5px">or paste below</span></div>
+    <textarea id="paste" style="min-height:110px;font-family:ui-monospace,monospace;font-size:12.5px" placeholder="Paste CSV rows (including the header)…"></textarea>
+    <button class="btn p" id="parse" style="margin-top:10px">Parse & preview</button></div>`);
+  v.appendChild(src);
+  const out=h(`<div id="out"></div>`); v.appendChild(out);
+
+  const doParse=(text)=>{
+    if(!window.Papa){ out.innerHTML=`<div class="card pad empty">CSV parser still loading — try again in a moment.</div>`; return; }
+    const res=window.Papa.parse(text.trim(),{header:true,skipEmptyLines:true});
+    const rows=res.data; const cols=res.meta.fields||[];
+    if(!rows.length){ out.innerHTML=`<div class="card pad empty">No rows found. Include a header row.</div>`; return; }
+    renderMapping(type,cols,rows);
+  };
+  src.querySelector('#parse').onclick=()=>doParse(src.querySelector('#paste').value||IMPORT_TYPES[type].template);
+  src.querySelector('#file').onchange=e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{src.querySelector('#paste').value=r.result;doParse(r.result);};r.readAsText(f);};
+
+  function renderMapping(type,cols,rows){
+    const cfg=IMPORT_TYPES[type];
+    out.innerHTML="";
+    const map={}; cfg.fields.forEach(f=>{ map[f]=cols.find(c=>c.toLowerCase().replace(/\s+/g,'_')===f)|| cols.find(c=>c.toLowerCase().includes(f.split('_')[0]))||""; });
+    const card=h(`<div class="card pad"><div class="eyebrow">3 · Map columns</div>
+      <div class="grid g2" style="margin-top:12px" id="maps"></div>
+      <div class="hr"></div><div class="eyebrow">Preview (first 5 rows)</div>
+      <div style="overflow:auto"><table id="prev"></table></div>
+      <div id="msg" style="margin-top:10px"></div>
+      <div style="display:flex;gap:10px;margin-top:12px"><button class="btn p" id="commit">Import ${rows.length} rows</button></div></div>`);
+    const maps=card.querySelector('#maps');
+    cfg.fields.forEach(f=>{
+      const sel=h(`<div class="field"><label class="f">${f}${cfg.required.includes(f)?' *':''}</label>
+        <select data-f="${f}"><option value="">— skip —</option>${cols.map(c=>`<option ${map[f]===c?'selected':''}>${esc(c)}</option>`).join("")}</select></div>`);
+      sel.querySelector('select').onchange=e=>{map[f]=e.target.value;drawPrev();};
+      maps.appendChild(sel);
+    });
+    function rowObj(r){const o={};cfg.fields.forEach(f=>o[f]=map[f]?r[map[f]]:"");return o;}
+    function drawPrev(){const p=card.querySelector('#prev');
+      p.innerHTML=`<thead><tr>${cfg.fields.map(f=>`<th>${f}</th>`).join("")}</tr></thead><tbody>${
+        rows.slice(0,5).map(r=>{const o=rowObj(r);return `<tr>${cfg.fields.map(f=>`<td>${esc(o[f]||"")}</td>`).join("")}</tr>`;}).join("")}</tbody>`;}
+    drawPrev();
+    card.querySelector('#commit').onclick=async()=>{
+      const msg=card.querySelector('#msg');
+      const missing=cfg.required.filter(f=>!map[f]);
+      if(missing.length){msg.innerHTML=`<span class="tag bad">Map required fields: ${missing.join(", ")}</span>`;return;}
+      card.querySelector('#commit').disabled=true; let ok=0,skip=0;
+      for(const r of rows){
+        const o=rowObj(r); if(cfg.required.some(f=>!o[f])){skip++;continue;}
+        try{ await commitRow(type,o); ok++; }catch(e){ skip++; }
+      }
+      msg.innerHTML=`<span class="tag good">Imported ${ok}</span> ${skip?`<span class="tag warn">skipped ${skip}</span>`:""}`;
+      await syncCache();
+    };
+    out.appendChild(card);
+  }
+  async function commitRow(type,o){
+    const schoolId=s=>{const m=mem.schools.find(x=>x.name.toLowerCase()===(s||"").toLowerCase()||x.short.toLowerCase()===(s||"").toLowerCase());return m?m.id:(mem.schools[0]||{}).id;};
+    const teacherId=n=>{const m=mem.teachers.find(x=>x.name.toLowerCase()===(n||"").toLowerCase());return m?m.id:null;};
+    if(type==="teachers") return db.addTeacher({school:schoolId(o.school),name:o.full_name,subject:o.subject,grade:o.grade});
+    if(type==="time"){ const hrs=(o.start_time&&o.end_time)?hoursBetween(o.start_time,o.end_time):0;
+      return db.addTime({coach:coach.id,date:o.entry_date,school:schoolId(o.school),start:o.start_time||null,end:o.end_time||null,hours:hrs,activity:o.activity||"Documentation",teacher:teacherId(o.teacher),note:o.note}); }
+    if(type==="coaching"){ const tid=teacherId(o.teacher); if(!tid) throw new Error("no teacher");
+      const t=({goal:"goal",resource:"resource",outcome:"outcome",focus:"focus_next_year",next:"focus_next_year"})[(o.item_type||"goal").toLowerCase()]||"goal";
+      return db.addCoachingItem(tid,t,o.body,coach.id); }
+  }
+}
+
+/* =====================================================================
+   INTERACTIVE TOUR — vanilla coachmark/spotlight engine
+   ===================================================================== */
+const TOUR_STEPS=[
+  {sel:null, title:"Welcome to HES Coaching", body:"A 60-second tour of how the pieces fit together. You can skip anytime."},
+  {sel:"#nav", title:"Everything lives here", body:"The sidebar is your map. What you see depends on your role — coaches, principals, and admins each get their own tools."},
+  {route:"dashboard", sel:".kpi", title:"Your dashboard", body:"Hours this pay period, estimated pay, and contracted-hours progress — all at a glance."},
+  {route:"timelog", sel:"#add", title:"Log your time", body:"Add time by school, activity, and teacher. Hours are computed for you. This replaces the spreadsheet."},
+  {route:"verify", sel:"#ctl,.card", title:"Certify & payroll", body:"Review a pay period and certify it with one click. That replaces the “please verify these hours” email."},
+  {route:"teachers", sel:"table", title:"Your caseload", body:"Open any teacher to see their growth timeline — every observation, goal, and resource in one place."},
+  {route:"observe", sel:".card", title:"Digital observations", body:"A walkthrough form that replaces the Word checklist. Saving it feeds the teacher's timeline and the year-end report."},
+  {route:"eoy", sel:"#report,.card", title:"The report writes itself", body:"Goals, resources, outcomes, and next-year focus compile into the end-of-year report automatically — no re-typing."},
+  {route:"help", sel:".help,.card", title:"Help is always here", body:"Full how-to by role lives on this page. You can relaunch this tour anytime. That's it — you're ready."},
+];
+let tourIx=0, tourOn=false;
+function ensureTourDom(){
+  if(document.getElementById('tourOverlay')) return;
+  document.body.appendChild(h(`<div id="tourOverlay"><div id="tourHole"></div></div>`));
+  document.body.appendChild(h(`<div id="tourTip" style="display:none"></div>`));
+}
+async function startTour(){ tourOn=true; tourIx=0; ensureTourDom(); await showTourStep(); }
+function endTour(){ tourOn=false; const o=document.getElementById('tourOverlay'),t=document.getElementById('tourTip');
+  if(o)o.style.display='none'; if(t)t.style.display='none'; }
+async function tourGo(delta){ tourIx+=delta; if(tourIx<0)tourIx=0;
+  if(tourIx>=TOUR_STEPS.length){ endTour(); return; } await showTourStep(); }
+async function showTourStep(){
+  const step=TOUR_STEPS[tourIx];
+  document.getElementById('tourOverlay').style.display='block';
+  if(step.route && step.route!==state.route){ state.route=step.route; state.param=null; location.hash=step.route; await render(); await new Promise(r=>setTimeout(r,60)); }
+  const hole=document.getElementById('tourHole'); const tip=document.getElementById('tourTip');
+  let target=step.sel?document.querySelector(step.sel):null;
+  const pad=8;
+  if(target && target.getBoundingClientRect){
+    const r=target.getBoundingClientRect();
+    hole.style.display='block';
+    hole.style.top=(r.top-pad)+'px'; hole.style.left=(r.left-pad)+'px';
+    hole.style.width=(r.width+pad*2)+'px'; hole.style.height=(r.height+pad*2)+'px';
+    // place tooltip below target if room, else above; clamp horizontally
+    const below = r.bottom+16+180 < window.innerHeight;
+    tip.style.display='block';
+    tip.style.top = (below ? r.bottom+14 : Math.max(12, r.top-14-tip.offsetHeight)) + 'px';
+    let left=Math.min(Math.max(12, r.left), window.innerWidth-312);
+    tip.style.left=left+'px';
+  } else {
+    // centered (welcome / no target)
+    hole.style.display='none';
+    hole.style.top='50%';hole.style.left='50%';hole.style.width='0';hole.style.height='0';
+    tip.style.display='block'; tip.style.top='50%'; tip.style.left='50%'; tip.style.transform='translate(-50%,-50%)';
+  }
+  if(target) tip.style.transform='';
+  const last=tourIx===TOUR_STEPS.length-1;
+  tip.innerHTML=`<div class="tstep">Step ${tourIx+1} of ${TOUR_STEPS.length}</div>
+    <h4>${esc(step.title)}</h4><p>${esc(step.body)}</p>
+    <div class="trow"><div class="tdots">${TOUR_STEPS.map((_,i)=>`<i class="${i===tourIx?'on':''}"></i>`).join("")}</div>
+    ${tourIx>0?`<button class="btn sm" data-t="prev">Back</button>`:`<button class="btn sm" data-t="skip">Skip</button>`}
+    <button class="btn p sm" data-t="next">${last?"Done":"Next"}</button></div>`;
+  tip.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>{const a=b.dataset.t;
+    if(a==='next')tourGo(1); else if(a==='prev')tourGo(-1); else endTour();});
+  // reposition after content sizes
+  if(target){ requestAnimationFrame(()=>{ const r=target.getBoundingClientRect();
+    const below=r.bottom+16+tip.offsetHeight<window.innerHeight;
+    tip.style.top=(below?r.bottom+14:Math.max(12,r.top-14-tip.offsetHeight))+'px'; }); }
+}
+window.addEventListener('keydown',e=>{ if(tourOn&&e.key==='Escape')endTour(); });
+
+/* =====================================================================
+   HOW-TO PAGE
+   ===================================================================== */
+async function vHelp(v){
+  v.appendChild(h(`<div class="card pad" style="margin-bottom:14px;display:flex;gap:14px;align-items:center">
+    <div style="flex:1"><div class="eyebrow">Guided tour</div>
+      <div style="font-size:15px;font-weight:600;margin-top:2px">New here? Take the 60-second walkthrough.</div></div>
+    <button class="btn p" id="tour">▶ Start interactive tour</button></div>`));
+  v.querySelector('#tour').onclick=()=>startTour();
+
+  const roles=h(`<div class="card pad help" style="margin-bottom:14px">
+    <div class="eyebrow">What each role can do</div>
+    <div class="grid g2" style="margin-top:12px">
+      <div class="role-card"><h4>Coach</h4><p class="dim" style="font-size:13px">Log time, certify pay periods, run observations, manage teachers, and generate the end-of-year report.</p></div>
+      <div class="role-card"><h4>Principal</h4><p class="dim" style="font-size:13px">See the latest observation per teacher, comment, and request additional coaching.</p></div>
+      <div class="role-card"><h4>Payroll</h4><p class="dim" style="font-size:13px">Review certified pay periods and approve or return them for corrections.</p></div>
+      <div class="role-card"><h4>District Admin</h4><p class="dim" style="font-size:13px">Invite coaches, import data, and see dashboards, teachers, and reports across schools.</p></div>
+    </div></div>`);
+  v.appendChild(roles);
+
+  const flows=[
+    {t:"Log your time",s:["Open Time & hours → Log time.","Pick the date, school, activity, and (optionally) a teacher.","Hours compute from start/end. Save.","Repeat for each work block — notes are encouraged."]},
+    {t:"Get paid",s:["Open Certify & payroll at the end of a pay period.","Review total hours × rate = gross.","Check the box and click Certify — this notifies Payroll.","Payroll approves; the period shows “ready to pay.”"]},
+    {t:"Run an observation",s:["Open New observation and pick the teacher.","Complete the walkthrough checklist and evidence.","Optionally click “Draft recommendations.”","Save — it lands on the teacher's growth timeline."]},
+    {t:"Produce the year-end report",s:["Open End-of-year report.","It compiles goals, resources, outcomes, and next-year focus per teacher.","Click Print / PDF, or Copy report.","No re-typing from your notes."]},
+  ];
+  const steps=h(`<div class="card pad help"><div class="eyebrow">Common tasks</div><div class="grid g2" style="margin-top:12px"></div></div>`);
+  const g=steps.querySelector('.grid');
+  flows.forEach(f=>{const c=h(`<div class="role-card"><h4>${esc(f.t)}</h4></div>`);
+    f.s.forEach((s,i)=>c.appendChild(h(`<div class="step"><div class="num">${i+1}</div><div style="font-size:13px" class="dim">${esc(s)}</div></div>`)));
+    g.appendChild(c);});
+  v.appendChild(steps);
+
+  if(state.role==="District Admin"){
+    v.appendChild(h(`<div class="card pad help" style="margin-top:14px"><div class="eyebrow">Admin: inviting coaches</div>
+      <div class="step"><div class="num">1</div><div class="dim" style="font-size:13px">Open <b>Team &amp; invites</b>.</div></div>
+      <div class="step"><div class="num">2</div><div class="dim" style="font-size:13px">Enter the coach's name, email, role, and (for coaches) their schools and contracted hours.</div></div>
+      <div class="step"><div class="num">3</div><div class="dim" style="font-size:13px">Send the invite. They get an email to set a password, then land in the app with the right access.</div></div></div>`));
+  }
+}
+
+/* =====================================================================
+   TEAM & INVITES (District Admin)
+   ===================================================================== */
+async function callTeam(action,payload){
+  const ep=window.HCP_CONFIG.TEAM_ENDPOINT;
+  if(!LIVE || !ep) return {demo:true};
+  const {data:{session}}=await SB.auth.getSession();
+  const r=await fetch(ep,{method:"POST",headers:{"Content-Type":"application/json",
+    "Authorization":"Bearer "+(session?session.access_token:"")},
+    body:JSON.stringify({action,...payload})});
+  const j=await r.json(); if(!r.ok) throw new Error(j.error||"Request failed"); return j;
+}
+async function vTeam(v){
+  v.appendChild(h(`<div class="banner noprint" style="margin-bottom:14px"><span>⊕</span>
+    <div><b>Invite your coaches.</b> ${LIVE?"They'll get an email to set a password and land in the app with the access you choose here.":"Demo mode simulates invites in this session — connect Supabase + the invite function to send real emails."}</div></div>`));
+
+  // invite form
+  const roleOpts=["coach","principal","payroll","district_admin"].map(r=>`<option value="${r}">${r.replace("_"," ")}</option>`).join("");
+  const schoolChecks=mem.schools.map(s=>`<label style="display:flex;gap:7px;align-items:center;font-size:13px;margin:3px 0"><input type="checkbox" data-school="${s.id}" style="width:auto">${esc(s.name)}</label>`).join("");
+  const form=h(`<div class="card pad" style="margin-bottom:14px">
+    <div class="eyebrow">Invite a team member</div>
+    <div class="grid g2" style="margin-top:12px">
+      <div class="field"><label class="f">Full name</label><input id="i_name" placeholder="Jane Doe"></div>
+      <div class="field"><label class="f">Email</label><input id="i_email" type="email" placeholder="jane@school.org"></div>
+      <div class="field"><label class="f">Role</label><select id="i_role">${roleOpts}</select></div>
+      <div class="field"><label class="f">Hourly rate (coaches)</label><input id="i_rate" type="number" value="40"></div>
+    </div>
+    <div class="field" id="schoolWrap"><label class="f">Assign schools &amp; contracted hours (coaches)</label>
+      <div style="display:grid;grid-template-columns:1fr 140px;gap:8px;align-items:center">
+        <div>${schoolChecks}</div>
+        <input id="i_hours" type="number" placeholder="Hours e.g. 700" title="Applied to each checked school">
+      </div></div>
+    <div id="i_msg" style="margin:6px 0"></div>
+    <button class="btn p" id="invite">Send invite</button>
+  </div>`);
+  v.appendChild(form);
+  form.querySelector('#invite').onclick=async()=>{
+    const msg=form.querySelector('#i_msg');
+    const name=form.querySelector('#i_name').value.trim(), email=form.querySelector('#i_email').value.trim();
+    const role=form.querySelector('#i_role').value, rate=+form.querySelector('#i_rate').value||40;
+    const hours=+form.querySelector('#i_hours').value||0;
+    const schools=[...form.querySelectorAll('[data-school]:checked')].map(c=>c.dataset.school);
+    if(!name||!email){ msg.innerHTML=`<span class="tag bad">Name and email are required</span>`; return; }
+    const btn=form.querySelector('#invite'); btn.disabled=true; btn.textContent="Sending…";
+    try{
+      const res=await callTeam('invite',{name,email,role,rate,contracts:schools.map(s=>({school_id:s,hours,rate}))});
+      if(res.demo){ // simulate in demo
+        mem.coaches.push({id:"c"+Date.now(),name,short:initials(name),years:null,schools:schools.length?schools:mem.schools.map(s=>s.id)});
+        msg.innerHTML=`<span class="tag good">Invite simulated (demo)</span> — ${esc(name)} would receive an email.`;
+      } else {
+        msg.innerHTML=`<span class="tag good">Invite sent to ${esc(email)}</span>`;
+      }
+      form.querySelector('#i_name').value="";form.querySelector('#i_email').value="";
+      loadTeam();
+    }catch(e){ msg.innerHTML=`<span class="tag bad">${esc(e.message)}</span>`; }
+    btn.disabled=false; btn.textContent="Send invite";
+  };
+
+  // team list
+  const list=h(`<div class="card"><div class="pad" style="padding-bottom:6px"><div class="eyebrow">Team members</div></div>
+    <table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th></tr></thead><tbody id="tbody"></tbody></table></div>`);
+  v.appendChild(list);
+  async function loadTeam(){
+    const tb=list.querySelector('#tbody'); tb.innerHTML=`<tr><td colspan="4"><div class="empty">Loading…</div></td></tr>`;
+    let members=[];
+    try{ const res=await callTeam('list',{});
+      if(res.demo){ members=mem.coaches.map(c=>({full_name:c.name,email:"—",role:"coach",status:"active"})); }
+      else { members=res.members||[]; }
+    }catch(e){ members=[]; }
+    tb.innerHTML="";
+    if(!members.length){ tb.appendChild(h(`<tr><td colspan="4"><div class="empty">No members yet.</div></td></tr>`)); return; }
+    members.forEach(m=>{const active=(m.status==="active"||m.confirmed);
+      tb.appendChild(h(`<tr><td><b>${esc(m.full_name||"—")}</b></td><td class="dim">${esc(m.email||"—")}</td>
+        <td><span class="tag">${esc((m.role||"coach").replace("_"," "))}</span></td>
+        <td><span class="status-dot" style="background:${active?'var(--good)':'var(--warn)'}"></span>${active?"Active":"Invited"}</td></tr>`));});
+  }
+  loadTeam();
+}
+
 /* =====================================================================
    BOOT
    ===================================================================== */
 function mountControls(){
   const rs=document.getElementById('roleSel');
+  const cs=document.getElementById('coachSel');
+  if(LIVE){
+    // live: no demo switchers; show the signed-in role (read-only) + sign out
+    rs.style.display='none'; cs.style.display='none';
+    if(!document.getElementById('signout')){
+      const b=h(`<button class="btn sm" id="signout">Sign out</button>`); b.onclick=()=>auth.signOut();
+      document.querySelector('.who').insertBefore(b,document.getElementById('avatar'));
+      const badge=h(`<span class="tag brand" id="rolebadge">${esc(state.role)}</span>`);
+      document.querySelector('.who').insertBefore(badge,b);
+    }
+    return;
+  }
   rs.innerHTML=ROLES.map(r=>`<option ${r===state.role?'selected':''}>${r}</option>`).join("");
   rs.onchange=e=>{state.role=e.target.value; render();};
-  const cs=document.getElementById('coachSel');
   cs.innerHTML=mem.coaches.filter(c=>c.id!=="metima").map(c=>`<option value="${c.id}" ${c.id===state.coach?'selected':''}>${esc(c.name)}</option>`).join("");
   cs.onchange=e=>{state.coach=e.target.value; render();};
 }
 (async function(){
   await initBackend();
   mountControls();
+  const tb=document.getElementById('tourBtn'); if(tb) tb.onclick=()=>startTour();
   const[r,p]=location.hash.replace(/^#/,"").split("/");
   if(r){state.route=r;state.param=p||null;}
-  render();
+  await render();
+  // auto-offer the tour once per session (skips when already signed in to a busy account)
+  if(!window.__hcpToured && !(auth.configured() && !state.user)){
+    window.__hcpToured=true;
+    setTimeout(()=>startTour(), 500);
+  }
 })();
 </script>
 </body>
